@@ -16,6 +16,7 @@
  */
 package org.apache.nifi.processors.standard;
 
+import static org.apache.nifi.processors.standard.DistributeLoad.OVERFLOW_REL;
 import static org.junit.Assert.assertEquals;
 
 import java.util.List;
@@ -161,5 +162,18 @@ public class TestDistributeLoad {
             final MockFlowFile mockFlowFile = flowFilesForRelationship.get(0);
             assertEquals(String.valueOf(i), mockFlowFile.getAttribute(DistributeLoad.RELATIONSHIP_ATTRIBUTE));
         }
+    }
+
+    @Test
+    public void testOverflow() {
+        final TestRunner testRunner = TestRunners.newTestRunner(new DistributeLoad());
+        testRunner.setProperty(DistributeLoad.NUM_RELATIONSHIPS, "1");
+        testRunner.setProperty(DistributeLoad.DISTRIBUTION_STRATEGY, DistributeLoad.STRATEGY_NEXT_AVAILABLE);
+
+        testRunner.setRelationshipUnavailable("1");
+        testRunner.enqueue(new byte[0]);
+        testRunner.run();
+
+        testRunner.assertAllFlowFilesTransferred(OVERFLOW_REL, 1);
     }
 }

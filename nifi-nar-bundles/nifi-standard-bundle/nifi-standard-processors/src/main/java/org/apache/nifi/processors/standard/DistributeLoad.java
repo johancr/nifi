@@ -65,9 +65,10 @@ import org.apache.nifi.processor.util.StandardValidators;
 @TriggerWhenAnyDestinationAvailable
 @Tags({"distribute", "load balance", "route", "round robin", "weighted"})
 @CapabilityDescription("Distributes FlowFiles to downstream processors based on a Distribution Strategy. If using the Round Robin "
-        + "strategy, the default is to assign each destination a weighting of 1 (evenly distributed). However, optional properties"
+        + "strategy, the default is to assign each destination a weighting of 1 (evenly distributed). However, optional properties "
         + "can be added to the change this; adding a property with the name '5' and value '10' means that the relationship with name "
-        + "'5' will be receive 10 FlowFiles in each iteration instead of 1.")
+        + "'5' will be receive 10 FlowFiles in each iteration instead of 1. If using the Next Available strategy, the 'overflow' "
+        + "relationship receives FlowFiles when no other relationship is available.")
 @DynamicProperty(name = "The relationship name(positive number)", value = "The relationship Weight(positive number)", description = "adding a "
         + "property with the name '5' and value '10' means that the relationship with name "
         + "'5' will be receive 10 FlowFiles in each iteration instead of 1.")
@@ -126,6 +127,10 @@ public class DistributeLoad extends AbstractProcessor {
             .identifiesControllerService(LoadDistributionService.class)
             .build();
     public static final String RELATIONSHIP_ATTRIBUTE = "distribute.load.relationship";
+    public static final Relationship OVERFLOW_REL = new Relationship.Builder()
+            .name("overflow")
+            .description("When using 'Next Available Strategy' and no other relationship is available, FlowFiles are routed here")
+            .build();
 
     private List<PropertyDescriptor> properties;
     private final AtomicReference<Set<Relationship>> relationshipsRef = new AtomicReference<>();
@@ -139,7 +144,7 @@ public class DistributeLoad extends AbstractProcessor {
     protected void init(final ProcessorInitializationContext context) {
         final Set<Relationship> relationships = new HashSet<>();
         relationships.add(createRelationship(1));
-        relationshipsRef.set(Collections.unmodifiableSet(relationships));
+        updateRelationships(relationships);
 
         final List<PropertyDescriptor> properties = new ArrayList<>();
         properties.add(NUM_RELATIONSHIPS);
@@ -164,7 +169,7 @@ public class DistributeLoad extends AbstractProcessor {
             for (int i = 1; i <= Integer.parseInt(newValue); i++) {
                 relationships.add(createRelationship(i));
             }
-            this.relationshipsRef.set(Collections.unmodifiableSet(relationships));
+            updateRelationships(relationships);
         } else if (descriptor.equals(DISTRIBUTION_STRATEGY)) {
             switch (newValue.toLowerCase()) {
                 case STRATEGY_ROUND_ROBIN:
@@ -178,6 +183,7 @@ public class DistributeLoad extends AbstractProcessor {
             }
             doSetProps.set(true);
             doCustomValidate.set(true);
+            updateRelationships(relationshipsRef.get());
         }
     }
 
@@ -262,7 +268,7 @@ public class DistributeLoad extends AbstractProcessor {
                         for (int i = numHosts + 1; i <= numRels; i++) {
                             relsWithDesc.add(createRelationship(i));
                         }
-                        relationshipsRef.set(Collections.unmodifiableSet(relsWithDesc));
+                        updateRelationships(relsWithDesc);
                     }
                 }
             }
@@ -338,6 +344,16 @@ public class DistributeLoad extends AbstractProcessor {
         }
 
         this.weightedRelationshipListRef.set(Collections.unmodifiableList(relationshipList));
+    }
+
+    private void updateRelationships(Set<Relationship> relationships) {
+        Set<Relationship> updatedRelationships = new HashSet<>(relationships);
+        if (strategyRef.get().getClass().equals(NextAvailableStrategy.class)) {
+            updatedRelationships.add(OVERFLOW_REL);
+        } else {
+            updatedRelationships.remove(OVERFLOW_REL);
+        }
+        relationshipsRef.set(Collections.unmodifiableSet(updatedRelationships));
     }
 
     @Override
@@ -479,7 +495,11 @@ public class DistributeLoad extends AbstractProcessor {
                 relationship = relationshipList.get(idx);
                 foundFreeRelationship = context.getAvailableRelationships().contains(relationship);
                 if (++attempts % numRelationships == 0 && !foundFreeRelationship) {
-                    return null;
+                    if (context.getAvailableRelationships().contains(OVERFLOW_REL)) {
+                        return OVERFLOW_REL;
+                    } else {
+                        return null;
+                    }
                 }
             }
 
